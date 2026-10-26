@@ -74,6 +74,67 @@ async function fixture(t: test.TestContext, handle?: (message: Message, socket: 
     }
 }
 
+test('compact state and incremental events retain only the latest 40 summaries', async (t) => {
+    const f = await fixture(t)
+    const before = f.client.revision
+    for (let i = 0; i < 41; i++) await f.push({ type: 'msg', from: 'Human', msg: `message ${i}` })
+    const state = f.client.state()
+    assert.equal('events' in state, false)
+    assert.equal('chat' in state, false)
+    assert.equal(state.latestChatId, 41)
+    assert.equal(f.client.getChatMessages(40).messages[0].msg, 'message 40')
+    const history = f.client.getEvents(before)
+    assert.equal(history.events.length, 40)
+    assert.equal(history.truncated, true)
+    assert.equal(history.latestRevision, state.revision)
+    assert.equal(f.client.getEvents(state.revision - 1).events.length, 1)
+    assert.equal(f.client.getEvents(state.revision - 40).truncated, false)
+    assert.deepEqual(f.client.getEvents(state.revision).events, [])
+    history.events[0].type = 'mutated'
+    assert.equal(f.client.getEvents().events[0].type, 'msg')
+})
+
+test('settlement retains score changes through next round and game over without private data', async (t) => {
+    const f = await fixture(t)
+    const settled = game()
+    settled.stage.operate = 9
+    settled.players[0].score = 260
+    settled.players[1].score = 20
+    await f.push({ type: 'calcDone', game: settled, player: 1, antiCalc: [2], res: [60, 0], secret: 'hidden' })
+    const result = f.client.state().lastSettlement!
+    assert.deepEqual(result, {
+        revision: f.client.revision,
+        gameOver: false,
+        calcPlayerId: 1,
+        antiCalcPlayerIds: [2],
+        players: [
+            { id: 'ai', internalId: 1, name: 'AI', score: 260, delta: 60 },
+            { id: 'human', internalId: 2, name: 'Human', score: 20, delta: 0 }
+        ]
+    })
+    result.players[0].score = -1
+    await f.push({ type: 'next', game: game() })
+    assert.equal(f.client.state().lastSettlement?.players[0].score, 260)
+    await f.push({ type: 'gameOver', game: settled })
+    assert.equal(f.client.state().game, undefined)
+    assert.equal(f.client.state().lastSettlement?.gameOver, true)
+    assert.equal(f.client.state().lastSettlement?.players[0].delta, 60)
+    await f.push({ type: 'start', game: game() })
+    assert.equal(f.client.state().lastSettlement, undefined)
+    await f.push({ type: 'calcDone', game: settled, player: -1, res: [0, 0] })
+    assert.equal(f.client.state().lastSettlement?.calcPlayerId, -1)
+    assert.deepEqual(f.client.state().lastSettlement?.antiCalcPlayerIds, [])
+    assert.equal(f.client.leave().lastSettlement, undefined)
+})
+
+test('game over without a cached settlement exposes only final scores', async (t) => {
+    const f = await fixture(t)
+    await f.push({ type: 'gameOver', game: game() })
+    assert.equal(f.client.state().lastSettlement?.gameOver, true)
+    assert.equal(f.client.state().lastSettlement?.players[0].delta, undefined)
+    assert.equal('hand' in f.client.state().lastSettlement!.players[0], false)
+})
+
 test('profile updates preserve other fields, validate inputs and wait for own broadcast', async (t) => {
     const f = await fixture(
         t,

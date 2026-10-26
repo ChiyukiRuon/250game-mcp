@@ -9,10 +9,19 @@ type Pending =
     | { kind: 'putMethod'; options: { title: string; value: number }[]; cards: Card[] }
     | { kind: 'cards'; options: Card[]; count: number }
 
+type Settlement = {
+    revision: number
+    gameOver: boolean
+    calcPlayerId?: number
+    antiCalcPlayerIds?: number[]
+    players: { id: string; internalId: number; name: string; score?: number; delta?: number }[]
+}
+
 export class GameClient {
     private socket?: WebSocket
     private changes = new EventEmitter()
     private game?: Game
+    private lastSettlement?: Settlement
     private players: Player[] = []
     private uid = ''
     private name = ''
@@ -130,7 +139,42 @@ export class GameClient {
         if (message.type === 'putCardSelect') {
             this.pending = { kind: 'cards', options: message.selection, count: message.count }
         }
+        if (message.type === 'start') this.lastSettlement = undefined
+        if (message.type === 'calcDone' && this.game) {
+            this.lastSettlement = {
+                revision: this.revision + 1,
+                gameOver: false,
+                calcPlayerId: Number.isInteger(message.player) ? message.player : undefined,
+                antiCalcPlayerIds: Array.isArray(message.antiCalc)
+                    ? message.antiCalc.filter((id: unknown) => Number.isInteger(id))
+                    : [],
+                players: this.game.players.map((player, index) => ({
+                    id: player.id,
+                    internalId: player.internalId,
+                    name: player.name,
+                    score: player.score,
+                    delta:
+                        Array.isArray(message.res) && Number.isFinite(message.res[index])
+                            ? message.res[index]
+                            : undefined
+                }))
+            }
+        }
         if (message.type === 'gameOver') {
+            if (this.lastSettlement) {
+                this.lastSettlement.gameOver = true
+            } else if (this.game) {
+                this.lastSettlement = {
+                    revision: this.revision + 1,
+                    gameOver: true,
+                    players: this.game.players.map(({ id, internalId, name, score }) => ({
+                        id,
+                        internalId,
+                        name,
+                        score
+                    }))
+                }
+            }
             this.players = this.game?.players ?? this.players
             this.game = undefined
         }
@@ -167,6 +211,7 @@ export class GameClient {
         this.name = name
         this.chatMessages = []
         this.game = undefined
+        this.lastSettlement = undefined
         this.players = []
         this.ownId = undefined
         this.observer = false
@@ -226,6 +271,7 @@ export class GameClient {
         this.joined = false
         this.pending = undefined
         this.game = undefined
+        this.lastSettlement = undefined
         this.players = []
         this.chatMessages = []
         this.ownId = undefined
@@ -298,6 +344,14 @@ export class GameClient {
         return (this.game?.players ?? this.players).find((player) => player.internalId === this.ownId)
     }
 
+    getEvents(afterRevision = 0) {
+        return {
+            events: this.events.filter((event) => event.revision > afterRevision).map((event) => ({ ...event })),
+            latestRevision: this.revision,
+            truncated: afterRevision < (this.events[0]?.revision ?? this.revision + 1) - 1
+        }
+    }
+
     state() {
         return {
             connected: this.socket?.readyState === WebSocket.OPEN,
@@ -306,7 +360,8 @@ export class GameClient {
             playerId: this.uid,
             internalId: this.ownId,
             revision: this.revision,
-            chat: this.getChatMessages(),
+            latestChatId: this.chatSequence,
+            lastSettlement: this.lastSettlement ? structuredClone(this.lastSettlement) : undefined,
             awaitingConfirmation: this.busy || this.uncertain,
             lastError: this.lastError,
             availableActions: this.availableActions(),
@@ -320,8 +375,7 @@ export class GameClient {
                       name: player.name,
                       profile: publicProfile(player.profile),
                       ready: !!player.ready
-                  })),
-            events: [...this.events]
+                  }))
         }
     }
 

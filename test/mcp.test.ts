@@ -18,7 +18,7 @@ test('MCP discovery, resources, tool result and input errors over protocol trans
     await server.connect(serverTransport)
     await client.connect(clientTransport)
     const tools = await client.listTools()
-    assert.equal(tools.tools.length, 16)
+    assert.equal(tools.tools.length, 17)
     assert.ok(tools.tools.some((tool) => tool.name === 'respond_cha'))
     assert.ok(tools.tools.some((tool) => tool.name === 'send_chat'))
     const chat = await client.callTool({ name: 'get_chat_messages', arguments: {} })
@@ -29,6 +29,16 @@ test('MCP discovery, resources, tool result and input errors over protocol trans
     assert.equal(disconnectedChat.isError, true)
     const state = await client.callTool({ name: 'get_state', arguments: {} })
     assert.equal(JSON.parse((state.content as any)[0].text).connected, false)
+    assert.equal('events' in JSON.parse((state.content as any)[0].text), false)
+    assert.equal('chat' in JSON.parse((state.content as any)[0].text), false)
+    const events = await client.callTool({ name: 'get_events', arguments: {} })
+    assert.deepEqual(JSON.parse((events.content as any)[0].text), {
+        events: [],
+        latestRevision: 0,
+        truncated: false
+    })
+    const invalidEvents = await client.callTool({ name: 'get_events', arguments: { afterRevision: -1 } })
+    assert.equal(invalidEvents.isError, true)
     const failure = await client.callTool({
         name: 'discard_card',
         arguments: { revision: 0, card: { id: 'A', color: 0 } }
@@ -49,7 +59,7 @@ test('compiled entry point serves actual stdio MCP without stdout noise', async 
         await client.close()
     })
     await client.connect(transport)
-    assert.equal((await client.listTools()).tools.length, 16)
+    assert.equal((await client.listTools()).tools.length, 17)
     const response = await client.callTool({ name: 'get_state', arguments: {} })
     assert.equal(response.isError, undefined)
     assert.equal(JSON.parse((response.content as any)[0].text).connected, false)
