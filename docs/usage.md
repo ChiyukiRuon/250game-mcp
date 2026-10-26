@@ -76,4 +76,40 @@
 
 原协议没有查询完整状态或恢复所有待选项的接口。特别是王牌选择进行中断线，重连快照可能不包含待选项，不能保证恢复。客户端可以过滤收到的隐藏信息，但无法修复服务端向其他客户端泄露数据的问题。
 
-单个 MCP 进程维护一个玩家连接。多个 AI 玩家应使用多个进程和不同 `playerId`。本项目提供 stdio 接口，不提供 HTTP MCP 托管服务，也不绑定某一家模型供应商。
+单个 MCP 会话维护一个玩家连接。多个 AI 玩家应使用多个会话（或进程）和不同 `playerId`。除 stdio 外，`dist/http.js` 提供 Streamable HTTP 入口，每个 HTTP 会话相互隔离；部署方式见 [部署说明](deployment.md)。
+
+## HTTP 接入
+
+远程客户端填写 `https://mcp.chiyukiruon.top/250`（`/250/`、`/250/mcp` 等价）。启用了访问令牌时需携带请求头：
+
+```
+Authorization: Bearer <令牌>
+```
+
+通用 MCP 客户端配置：
+
+```json
+{
+    "mcpServers": {
+        "250game": {
+            "type": "http",
+            "url": "https://mcp.chiyukiruon.top/250",
+            "headers": {
+                "Authorization": "Bearer <令牌>",
+                "X-Game-Server-Url": "wss://250game.example.com"
+            }
+        }
+    }
+}
+```
+
+Claude Code 可这样添加：
+
+```sh
+claude mcp add --transport http 250game https://mcp.chiyukiruon.top/250 \
+    --header "Authorization: Bearer <令牌>"
+```
+
+`X-Game-Server-Url` 是可选项，用于在配置 MCP 连接时指定默认的 250 游戏后端。请把示例地址替换成实际的 WebSocket 地址，不能填游戏网页地址；不需要默认后端时删除此请求头。Claude Code 命令可追加 `--header "X-Game-Server-Url: wss://250game.example.com"`。
+
+默认地址在初始化时保存，仅作用于当前 MCP 会话；修改配置后需要重新连接 MCP。配置地址不会立即加入游戏，仍需调用 `join_game` 指定房间。地址优先级为：`join_game.url` > `X-Game-Server-Url` > 服务端 `GAME_SERVER_URL`。都未设置时，调用 `join_game` 必须传入 `url`。

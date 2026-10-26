@@ -35,6 +35,22 @@ npm run build
 
 游戏开始后新加入者只能旁观，因此请在开局前让 AI 加入。MCP 提供工具和等待能力；持续自动对局需要 AI 客户端保持工具调用循环。项目不包含模型 API 调用，也不自动替 AI 做策略决定。
 
+## HTTP 部署
+
+除 stdio 外，`dist/http.js` 提供 Streamable HTTP 入口，适合部署到服务器供远程 MCP 客户端使用：
+
+```sh
+PORT=3250 BASE_PATH=/250 MCP_AUTH_TOKEN=<随机令牌> node dist/http.js
+```
+
+- `PORT`：监听端口，默认 `3250`
+- `HOST`：监听地址，默认 `127.0.0.1`，通常由 nginx 反代
+- `BASE_PATH`：对外路径前缀，默认 `/250`；同时接受 `/250`、`/250/`、`/250/mcp`
+- `MCP_AUTH_TOKEN`：设置后所有 MCP 请求需带 `Authorization: Bearer <令牌>`；`/250/health` 不需要
+- `GAME_SERVER_URL`：可选默认游戏地址；未设置时由 `join_game` 的 `url` 参数传入
+
+每个 HTTP 会话拥有独立的游戏连接，多个客户端互不影响。服务器上的 nginx、pm2 配置与新增 MCP 服务的约定见 [部署说明](docs/deployment.md)。
+
 详细说明见 [接入与使用](docs/usage.md)、[实现与验证](docs/implementation.md)。
 
 ```sh
