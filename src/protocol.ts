@@ -6,6 +6,30 @@ export const cardSchema = z.object({
 })
 
 export type Card = z.infer<typeof cardSchema> & { real?: Card }
+export const playerProfileSchema = z
+    .object({
+        name: z.string().trim().min(1).max(64).optional(),
+        back: z
+            .string()
+            .max(4096)
+            .refine((value) => {
+                if (value === '') return true
+                try {
+                    return ['http:', 'https:'].includes(new URL(value).protocol)
+                } catch {
+                    return false
+                }
+            }, '头像必须是 http:// 或 https:// 图片地址，空字符串表示清除')
+            .optional()
+    })
+    .refine((value) => value.name !== undefined || value.back !== undefined, '至少提供名称或头像')
+export type PlayerProfile = { name?: string; back?: string }
+export function publicProfile(profile?: PlayerProfile): PlayerProfile {
+    return {
+        ...(typeof profile?.name === 'string' ? { name: profile.name.slice(0, 64) } : {}),
+        ...(typeof profile?.back === 'string' ? { back: profile.back.slice(0, 4096) } : {})
+    }
+}
 export interface Deck {
     cards: Card[]
 }
@@ -13,6 +37,7 @@ export interface Player {
     id: string
     internalId: number
     name: string
+    profile?: PlayerProfile
     score?: number
     ready?: boolean
     offline?: boolean
@@ -74,6 +99,7 @@ export function visibleGame(game: Game, ownId?: number) {
             id: player.id,
             internalId: player.internalId,
             name: player.name,
+            profile: publicProfile(player.profile),
             score: player.score,
             ready: player.ready,
             offline: player.offline,

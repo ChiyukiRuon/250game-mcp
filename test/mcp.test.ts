@@ -1,4 +1,4 @@
-import assert from 'node:assert/strict'
+﻿import assert from 'node:assert/strict'
 import test from 'node:test'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
@@ -18,8 +18,15 @@ test('MCP discovery, resources, tool result and input errors over protocol trans
     await server.connect(serverTransport)
     await client.connect(clientTransport)
     const tools = await client.listTools()
-    assert.equal(tools.tools.length, 13)
+    assert.equal(tools.tools.length, 16)
     assert.ok(tools.tools.some((tool) => tool.name === 'respond_cha'))
+    assert.ok(tools.tools.some((tool) => tool.name === 'send_chat'))
+    const chat = await client.callTool({ name: 'get_chat_messages', arguments: {} })
+    assert.deepEqual(JSON.parse((chat.content as any)[0].text).messages, [])
+    const emptyChat = await client.callTool({ name: 'send_chat', arguments: { message: '  ' } })
+    assert.equal(emptyChat.isError, true)
+    const disconnectedChat = await client.callTool({ name: 'send_chat', arguments: { message: 'hello' } })
+    assert.equal(disconnectedChat.isError, true)
     const state = await client.callTool({ name: 'get_state', arguments: {} })
     assert.equal(JSON.parse((state.content as any)[0].text).connected, false)
     const failure = await client.callTool({
@@ -42,7 +49,7 @@ test('compiled entry point serves actual stdio MCP without stdout noise', async 
         await client.close()
     })
     await client.connect(transport)
-    assert.equal((await client.listTools()).tools.length, 13)
+    assert.equal((await client.listTools()).tools.length, 16)
     const response = await client.callTool({ name: 'get_state', arguments: {} })
     assert.equal(response.isError, undefined)
     assert.equal(JSON.parse((response.content as any)[0].text).connected, false)

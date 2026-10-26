@@ -1,8 +1,8 @@
 import { EventEmitter } from 'node:events'
 import { randomUUID } from 'node:crypto'
 import WebSocket from 'ws'
-import type { Card, Game, Message, Player } from './protocol.js'
-import { requireOwned, visibleGame } from './protocol.js'
+import type { Card, Game, Message, Player, PlayerProfile } from './protocol.js'
+import { playerProfileSchema, publicProfile, requireOwned, visibleGame } from './protocol.js'
 import { hasMultiPut, isValidPutCard } from './rules.js'
 
 type Pending =
@@ -15,6 +15,9 @@ export class GameClient {
     private game?: Game
     private players: Player[] = []
     private uid = ''
+    private name = ''
+    private chatMessages: { id: number; from: string; msg: string }[] = []
+    private chatSequence = 0
     private ownId?: number
     private observer = false
     private joined = false
@@ -41,7 +44,18 @@ export class GameClient {
             this.send({ type: 'pong' })
             return
         }
-        if (['pong', 'pingResult', 'msg', 'firstCard'].includes(message.type)) return
+        if (message.type === 'msg') {
+            if (typeof message.from !== 'string' || typeof message.msg !== 'string') return
+            this.chatMessages.push({
+                id: ++this.chatSequence,
+                from: message.from.slice(0, 128),
+                msg: message.msg.slice(0, 2000)
+            })
+            this.chatMessages = this.chatMessages.slice(-100)
+            this.publish('msg')
+            return
+        }
+        if (['pong', 'pingResult', 'firstCard'].includes(message.type)) return
         if (message.type === 'hello') {
             this.joined = true
             this.observer = false
@@ -63,6 +77,7 @@ export class GameClient {
                     id: player.id,
                     internalId: player.internalId,
                     name: player.name,
+                    profile: publicProfile(player.profile),
                     score: player.score,
                     ready: player.ready,
                     offline: player.offline,
@@ -123,7 +138,15 @@ export class GameClient {
             this.lastError = String(message.msg ?? '服务端拒绝操作')
             this.responded.clear()
         }
-        if (this.expected.has(message.type) || message.type === 'error') {
+        if (message.type === 'setProfile') {
+            for (const player of [...this.players, ...(this.game?.players ?? [])]) {
+                if (player.internalId === message.id) player.profile = publicProfile(message.profile)
+            }
+        }
+        if (
+            (this.expected.has(message.type) && (message.type !== 'setProfile' || message.id === this.ownId)) ||
+            message.type === 'error'
+        ) {
             this.uncertain = false
             this.expected.clear()
         }
@@ -141,6 +164,8 @@ export class GameClient {
         const parsed = new URL(url)
         if (!['ws:', 'wss:'].includes(parsed.protocol)) throw new Error('地址必须使用 ws:// 或 wss://')
         this.uid = playerId
+        this.name = name
+        this.chatMessages = []
         this.game = undefined
         this.players = []
         this.ownId = undefined
@@ -202,6 +227,7 @@ export class GameClient {
         this.pending = undefined
         this.game = undefined
         this.players = []
+        this.chatMessages = []
         this.ownId = undefined
         this.uncertain = false
         this.expected.clear()
@@ -233,6 +259,41 @@ export class GameClient {
         return []
     }
 
+    sendChat(message: string) {
+        if (!this.joined) throw new Error('请先加入游戏房间')
+        if (!message.trim() || message.length > 2000) throw new Error('聊天内容不能为空，且不能超过 2000 个字符')
+        this.send({ type: 'msg', from: this.name, msg: message })
+        return { status: 'sent' }
+    }
+
+    async setPlayerProfile(revision: number, changes: PlayerProfile) {
+        const profile = playerProfileSchema.parse(changes)
+        if (!this.joined || this.observer) throw new Error('只有已加入房间的玩家可以修改角色资料')
+        if (revision !== this.revision) throw new Error('牌局已更新，请 get_state 后使用新的 revision')
+        if (this.busy || this.uncertain) throw new Error('请等待上一项操作确认后再修改角色资料')
+        const result = await this.command(
+            { type: 'setProfile', profile: { ...publicProfile(this.me()?.profile), ...profile } },
+            ['setProfile']
+        )
+        return {
+            ...result,
+            ...(profile.name !== undefined
+                ? {
+                      displayName: this.me()?.name,
+                      note: '原版后端仅保存 profile.name，不修改当前角色显示名；加入房间时通过 join_game.name 设置名称。对局中重连同一玩家会保留原显示名。'
+                  }
+                : {})
+        }
+    }
+
+    getChatMessages(afterId = 0) {
+        return {
+            messages: this.chatMessages.filter((message) => message.id > afterId).map((message) => ({ ...message })),
+            latestId: this.chatSequence,
+            truncated: afterId < (this.chatMessages[0]?.id ?? this.chatSequence + 1) - 1
+        }
+    }
+
     private me() {
         return (this.game?.players ?? this.players).find((player) => player.internalId === this.ownId)
     }
@@ -245,6 +306,7 @@ export class GameClient {
             playerId: this.uid,
             internalId: this.ownId,
             revision: this.revision,
+            chat: this.getChatMessages(),
             awaitingConfirmation: this.busy || this.uncertain,
             lastError: this.lastError,
             availableActions: this.availableActions(),
@@ -256,6 +318,7 @@ export class GameClient {
                       id: player.id,
                       internalId: player.internalId,
                       name: player.name,
+                      profile: publicProfile(player.profile),
                       ready: !!player.ready
                   })),
             events: [...this.events]

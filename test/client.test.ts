@@ -74,6 +74,57 @@ async function fixture(t: test.TestContext, handle?: (message: Message, socket: 
     }
 }
 
+test('profile updates preserve other fields, validate inputs and wait for own broadcast', async (t) => {
+    const f = await fixture(
+        t,
+        (message, socket) => {
+            if (message.type === 'setProfile') socket.send(JSON.stringify({ ...message, id: 2 }))
+        },
+        50
+    )
+    await f.push({
+        type: 'setProfile',
+        id: 1,
+        profile: { name: 'Existing', back: 'https://example.com/old.png', secret: 'hidden' }
+    })
+    await assert.rejects(f.client.setPlayerProfile(f.client.revision, {}))
+    await assert.rejects(f.client.setPlayerProfile(f.client.revision, { back: 'javascript:alert(1)' }))
+    await assert.rejects(f.client.setPlayerProfile(f.client.revision - 1, { name: 'New' }), /牌局已更新/)
+    await assert.rejects(f.client.setPlayerProfile(f.client.revision, { back: '' }), /未收到操作确认/)
+    assert.equal(f.client.state().awaitingConfirmation, true)
+    assert.deepEqual(f.received.at(-1), { type: 'setProfile', profile: { name: 'Existing', back: '' } })
+    await f.push({ type: 'setProfile', id: 1, profile: { name: 'Existing', back: '' } })
+    assert.equal(f.client.state().awaitingConfirmation, false)
+    assert.deepEqual(f.client.state().lobby?.[0].profile, { name: 'Existing', back: '' })
+    await f.push({ type: 'observer' })
+    await assert.rejects(f.client.setPlayerProfile(f.client.revision, { name: 'New' }), /只有已加入/)
+})
+
+test('chat sends upstream protocol, wakes waiters, bounds history and clears on leave', async (t) => {
+    const f = await fixture(t, (message, socket) => {
+        if (message.type === 'msg') socket.send(JSON.stringify(message))
+    })
+    const before = f.client.revision
+    assert.deepEqual(f.client.sendChat('你好'), { status: 'sent' })
+    await f.client.wait(before, 500)
+    assert.deepEqual(f.client.getChatMessages().messages, [{ id: 1, from: 'AI', msg: '你好' }])
+    assert.deepEqual(f.received.at(-1), { type: 'msg', from: 'AI', msg: '你好' })
+    assert.throws(() => f.client.sendChat('  '), /不能为空/)
+    assert.throws(() => f.client.sendChat('x'.repeat(2001)), /2000/)
+    const cursor = f.client.getChatMessages().latestId
+    for (let i = 0; i < 101; i++) await f.push({ type: 'msg', from: 'Human', msg: String(i), game: game() })
+    const history = f.client.getChatMessages(cursor)
+    assert.equal(history.messages.length, 100)
+    assert.equal(history.truncated, true)
+    assert.equal(f.client.state().game, undefined)
+    history.messages[0].msg = 'mutated'
+    assert.equal(f.client.getChatMessages().messages[0].msg, '1')
+    assert.deepEqual(f.client.getChatMessages(history.latestId).messages, [])
+    f.client.leave()
+    assert.deepEqual(f.client.getChatMessages().messages, [])
+    assert.throws(() => f.client.sendChat('hello'), /先加入/)
+})
+
 test('filters full private snapshots and responds to heartbeat without changing revision', async (t) => {
     const f = await fixture(t)
     const raw = game() as Game & { secret: string }
